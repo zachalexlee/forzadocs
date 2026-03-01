@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useCallback, useState } from "react";
+import { useEffect, useCallback, useState, useRef } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -33,9 +33,21 @@ export default function Editor() {
   const { activePageId, pages, updatePage } = useStore();
   const activePage = pages.find((p) => p.id === activePageId);
   const [slashMenu, setSlashMenu] = useState<SlashMenuState | null>(null);
+  const slashMenuRef = useRef<SlashMenuState | null>(null);
+  const activePageIdRef = useRef(activePageId);
 
-  const checkSlashCommand = useCallback(
-    (editorInstance: InstanceType<typeof import("@tiptap/react").Editor>) => {
+  // Keep refs in sync
+  useEffect(() => {
+    activePageIdRef.current = activePageId;
+  }, [activePageId]);
+  useEffect(() => {
+    slashMenuRef.current = slashMenu;
+  }, [slashMenu]);
+
+  const doCheckSlash = useCallback(
+    (editorInstance: { state: { selection: { empty: boolean; $from: { parent: { textContent: string }; parentOffset: number; pos: number } } }; view: { coordsAtPos: (pos: number) => { bottom: number; left: number } }; isDestroyed: boolean }) => {
+      if (editorInstance.isDestroyed) return;
+
       const { selection } = editorInstance.state;
       if (!selection.empty) {
         setSlashMenu(null);
@@ -47,19 +59,19 @@ export default function Editor() {
       const cursorPos = $from.parentOffset;
       const textBefore = textContent.slice(0, cursorPos);
 
-      // Match a slash at the start of the node or after whitespace
+      // Match a slash at the start of the text node or after whitespace
       const match = textBefore.match(/(?:^|\s)\/([\w]*)$/);
       if (match) {
         const query = match[1];
-        const from = $from.pos - query.length - 1;
-        const to = $from.pos;
+        const slashFrom = $from.pos - query.length - 1;
+        const slashTo = $from.pos;
 
         try {
-          const coords = editorInstance.view.coordsAtPos(from);
+          const coords = editorInstance.view.coordsAtPos(slashFrom);
           setSlashMenu({
             query,
-            from,
-            to,
+            from: slashFrom,
+            to: slashTo,
             coords: { top: coords.bottom + 4, left: coords.left },
           });
         } catch {
@@ -93,9 +105,10 @@ export default function Editor() {
       }),
     ],
     content: activePage?.content || "",
-    onUpdate: ({ editor }) => {
-      if (activePageId) {
-        updatePage(activePageId, { content: editor.getHTML() });
+    onUpdate: ({ editor: ed }) => {
+      const pageId = activePageIdRef.current;
+      if (pageId) {
+        updatePage(pageId, { content: ed.getHTML() });
       }
     },
     editorProps: {
@@ -106,19 +119,33 @@ export default function Editor() {
     immediatelyRender: false,
   });
 
-  // Detect slash commands on editor updates and selection changes
+  // Detect slash commands using both TipTap events AND DOM events for reliability
   useEffect(() => {
     if (!editor) return;
 
-    const handler = () => checkSlashCommand(editor);
-    editor.on("update", handler);
-    editor.on("selectionUpdate", handler);
+    // TipTap transaction event (fires on every state change)
+    const onTransaction = () => {
+      doCheckSlash(editor);
+    };
+    editor.on("transaction", onTransaction);
+
+    // DOM fallback: keyup on the editor element
+    const editorDom = editor.view.dom;
+    const onKeyUp = () => {
+      // Small delay to ensure TipTap has processed the input
+      requestAnimationFrame(() => {
+        if (!editor.isDestroyed) {
+          doCheckSlash(editor);
+        }
+      });
+    };
+    editorDom.addEventListener("keyup", onKeyUp);
 
     return () => {
-      editor.off("update", handler);
-      editor.off("selectionUpdate", handler);
+      editor.off("transaction", onTransaction);
+      editorDom.removeEventListener("keyup", onKeyUp);
     };
-  }, [editor, checkSlashCommand]);
+  }, [editor, doCheckSlash]);
 
   useEffect(() => {
     if (editor && activePage) {
