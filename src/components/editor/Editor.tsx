@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useState } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -18,10 +18,59 @@ import TagBar from "./TagBar";
 import FileSection from "../files/FileSection";
 import EmbedSection from "../embeds/EmbedSection";
 import TableView from "../tables/TableView";
+import SlashCommandMenu from "./SlashCommandMenu";
+import CoverImage from "./CoverImage";
+import Breadcrumbs from "./Breadcrumbs";
+
+interface SlashMenuState {
+  query: string;
+  from: number;
+  to: number;
+  coords: { top: number; left: number };
+}
 
 export default function Editor() {
   const { activePageId, pages, updatePage } = useStore();
   const activePage = pages.find((p) => p.id === activePageId);
+  const [slashMenu, setSlashMenu] = useState<SlashMenuState | null>(null);
+
+  const checkSlashCommand = useCallback(
+    (editorInstance: InstanceType<typeof import("@tiptap/react").Editor>) => {
+      const { selection } = editorInstance.state;
+      if (!selection.empty) {
+        setSlashMenu(null);
+        return;
+      }
+
+      const { $from } = selection;
+      const textContent = $from.parent.textContent;
+      const cursorPos = $from.parentOffset;
+      const textBefore = textContent.slice(0, cursorPos);
+
+      // Match a slash at the start of the node or after whitespace
+      const match = textBefore.match(/(?:^|\s)\/([\w]*)$/);
+      if (match) {
+        const query = match[1];
+        const from = $from.pos - query.length - 1;
+        const to = $from.pos;
+
+        try {
+          const coords = editorInstance.view.coordsAtPos(from);
+          setSlashMenu({
+            query,
+            from,
+            to,
+            coords: { top: coords.bottom + 4, left: coords.left },
+          });
+        } catch {
+          setSlashMenu(null);
+        }
+      } else {
+        setSlashMenu(null);
+      }
+    },
+    []
+  );
 
   const editor = useEditor({
     extensions: [
@@ -29,7 +78,7 @@ export default function Editor() {
         heading: { levels: [1, 2, 3] },
       }),
       Placeholder.configure({
-        placeholder: "Start writing, or type '/' for commands...",
+        placeholder: "Type '/' for commands...",
       }),
       TaskList,
       TaskItem.configure({ nested: true }),
@@ -57,6 +106,20 @@ export default function Editor() {
     immediatelyRender: false,
   });
 
+  // Detect slash commands on editor updates and selection changes
+  useEffect(() => {
+    if (!editor) return;
+
+    const handler = () => checkSlashCommand(editor);
+    editor.on("update", handler);
+    editor.on("selectionUpdate", handler);
+
+    return () => {
+      editor.off("update", handler);
+      editor.off("selectionUpdate", handler);
+    };
+  }, [editor, checkSlashCommand]);
+
   useEffect(() => {
     if (editor && activePage) {
       const currentContent = editor.getHTML();
@@ -64,6 +127,8 @@ export default function Editor() {
         editor.commands.setContent(activePage.content || "");
       }
     }
+    // Close slash menu when switching pages
+    setSlashMenu(null);
   }, [activePageId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleTitleChange = useCallback(
@@ -77,7 +142,10 @@ export default function Editor() {
 
   const handleIconChange = useCallback(() => {
     if (!activePageId) return;
-    const icons = ["📄", "📝", "📋", "📌", "📎", "🗂️", "📑", "🔖", "💡", "⭐", "🎯", "🚀", "💻", "🎨", "📊", "🔬"];
+    const icons = [
+      "📄", "📝", "📋", "📌", "📎", "🗂️", "📑", "🔖", "💡", "⭐",
+      "🎯", "🚀", "💻", "🎨", "📊", "🔬", "🏠", "📚", "🎵", "🌍",
+    ];
     const current = activePage?.icon || "📄";
     const currentIndex = icons.indexOf(current);
     const nextIcon = icons[(currentIndex + 1) % icons.length];
@@ -87,15 +155,34 @@ export default function Editor() {
   if (!activePage) {
     return (
       <div className="flex-1 flex items-center justify-center bg-background">
-        <div className="text-center">
-          <div className="text-6xl mb-4">📝</div>
-          <h2 className="text-xl font-semibold text-text-primary mb-2">
+        <div className="text-center max-w-md">
+          <div className="text-7xl mb-6">📝</div>
+          <h2 className="text-2xl font-semibold text-text-primary mb-3">
             Welcome to ForzaDocs
           </h2>
-          <p className="text-text-secondary text-sm max-w-md">
+          <p className="text-text-secondary text-sm leading-relaxed mb-6">
+            Your AI-powered workspace for notes, docs, and ideas.
             Select a page from the sidebar or create a new one to get started.
-            Use AI features to help you write, summarize, and organize your notes.
           </p>
+          <div className="flex flex-col gap-2 text-left bg-surface rounded-xl p-5 border border-border">
+            <div className="text-xs uppercase tracking-wider text-text-muted font-medium mb-1">Quick tips</div>
+            <div className="flex items-center gap-3 text-sm text-text-secondary">
+              <span className="text-base">⌨️</span>
+              <span>Type <kbd className="px-1.5 py-0.5 rounded bg-background border border-border text-xs font-mono">/</kbd> for the slash command menu</span>
+            </div>
+            <div className="flex items-center gap-3 text-sm text-text-secondary">
+              <span className="text-base">⭐</span>
+              <span>Hover pages in the sidebar to favorite them</span>
+            </div>
+            <div className="flex items-center gap-3 text-sm text-text-secondary">
+              <span className="text-base">🎨</span>
+              <span>Hover above a page title to add a cover image</span>
+            </div>
+            <div className="flex items-center gap-3 text-sm text-text-secondary">
+              <span className="text-base">✨</span>
+              <span>Use the AI button in the toolbar for writing help</span>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -104,16 +191,24 @@ export default function Editor() {
   return (
     <div className="flex-1 flex flex-col bg-background overflow-hidden">
       {/* Toolbar */}
-      {editor && <EditorToolbar editor={editor} />}
+      {editor && activePage.type !== "table" && (
+        <EditorToolbar editor={editor} />
+      )}
 
       {/* Content area */}
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-3xl mx-auto px-8 py-8">
+        {/* Cover Image */}
+        <CoverImage pageId={activePage.id} coverImage={activePage.coverImage} />
+
+        <div className="max-w-3xl mx-auto px-8 py-6">
+          {/* Breadcrumbs */}
+          <Breadcrumbs pageId={activePage.id} />
+
           {/* Icon & Title */}
-          <div className="flex items-start gap-3 mb-4">
+          <div className="flex items-start gap-3 mb-1">
             <button
               onClick={handleIconChange}
-              className="text-4xl hover:bg-surface-hover rounded-lg p-1 transition-colors mt-1"
+              className="text-5xl hover:bg-surface-hover rounded-xl p-1.5 transition-colors mt-0.5 active:scale-95"
               title="Click to change icon"
             >
               {activePage.icon}
@@ -123,19 +218,39 @@ export default function Editor() {
               value={activePage.title}
               onChange={handleTitleChange}
               placeholder="Untitled"
-              className="text-3xl font-bold bg-transparent outline-none w-full text-text-primary placeholder:text-text-muted"
+              className="text-4xl font-bold bg-transparent outline-none w-full text-text-primary placeholder:text-text-muted pt-2"
             />
           </div>
 
           {/* Tags */}
-          <TagBar />
+          <div className="ml-1">
+            <TagBar />
+          </div>
 
           {/* Editor or Table View */}
-          {activePage.type === "table" ? (
-            <TableView />
-          ) : (
-            <EditorContent editor={editor} className="min-h-[300px]" />
-          )}
+          <div className="mt-2 relative">
+            {activePage.type === "table" ? (
+              <TableView />
+            ) : (
+              <>
+                <EditorContent
+                  editor={editor}
+                  className="min-h-[400px]"
+                />
+                {slashMenu && editor && (
+                  <SlashCommandMenu
+                    editor={editor}
+                    query={slashMenu.query}
+                    from={slashMenu.from}
+                    to={slashMenu.to}
+                    coords={slashMenu.coords}
+                    onClose={() => setSlashMenu(null)}
+                    onSelect={() => setSlashMenu(null)}
+                  />
+                )}
+              </>
+            )}
+          </div>
 
           {/* Embeds Section */}
           {activePage.embeds.length > 0 && <EmbedSection />}

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import { v4 as uuidv4 } from "uuid";
 import type {
   Page,
@@ -26,6 +27,9 @@ interface AppState {
   deletePage: (id: string) => void;
   setActivePage: (id: string | null) => void;
   getActivePage: () => Page | undefined;
+
+  // Favorites
+  toggleFavorite: (pageId: string) => void;
 
   // Sidebar
   toggleSidebar: () => void;
@@ -79,249 +83,297 @@ const defaultPage: () => Page = () => ({
   embeds: [],
 });
 
-export const useStore = create<AppState>((set, get) => ({
-  pages: [
-    {
-      ...defaultPage(),
-      title: "Welcome to ForzaDocs",
-      content: `<h1>Welcome to ForzaDocs! 🚀</h1><p>Your AI-powered workspace for notes, files, tables, and more.</p><h2>Getting Started</h2><ul><li><strong>Create pages</strong> using the + button in the sidebar</li><li><strong>Rich text editing</strong> with headings, lists, code blocks, and more</li><li><strong>Embed content</strong> from YouTube and websites</li><li><strong>AI features</strong> to help you write, summarize, and organize</li></ul><h2>AI Features</h2><ul><li>✍️ <strong>AI Writing Assistant</strong> — Help draft and edit your notes</li><li>📝 <strong>AI Summarization</strong> — Get summaries of your notes</li><li>💬 <strong>AI Chat</strong> — Chat with AI about your content</li><li>🏷️ <strong>Auto-tagging</strong> — Automatically organize your notes</li></ul><p>Click the ✨ AI button in the toolbar to get started!</p>`,
-      icon: "🚀",
-    },
-  ],
-  activePageId: null,
-  sidebarOpen: true,
-  aiChatOpen: false,
-  chatMessages: [],
-  searchQuery: "",
-
-  createPage: (parentId = null, type = "note") => {
-    const newPage: Page = {
-      ...defaultPage(),
-      parentId,
-      type,
-      tableData:
-        type === "table"
-          ? {
-              columns: [
-                { id: uuidv4(), name: "Name", type: "text" },
-                { id: uuidv4(), name: "Status", type: "select", options: ["Todo", "In Progress", "Done"] },
-                { id: uuidv4(), name: "Date", type: "date" },
-              ],
-              rows: [{ id: uuidv4(), cells: {} }],
-            }
-          : undefined,
-    };
-    set((state) => {
-      const pages = [...state.pages, newPage];
-      if (parentId) {
-        const parentIndex = pages.findIndex((p) => p.id === parentId);
-        if (parentIndex !== -1) {
-          pages[parentIndex] = {
-            ...pages[parentIndex],
-            children: [...pages[parentIndex].children, newPage.id],
-          };
-        }
-      }
-      return { pages, activePageId: newPage.id };
-    });
-    return newPage.id;
-  },
-
-  updatePage: (id, updates) =>
-    set((state) => ({
-      pages: state.pages.map((p) =>
-        p.id === id ? { ...p, ...updates, updatedAt: new Date().toISOString() } : p
-      ),
-    })),
-
-  deletePage: (id) =>
-    set((state) => {
-      const page = state.pages.find((p) => p.id === id);
-      if (!page) return state;
-
-      const idsToDelete = new Set<string>();
-      const collectChildren = (pageId: string) => {
-        idsToDelete.add(pageId);
-        const p = state.pages.find((pg) => pg.id === pageId);
-        p?.children.forEach(collectChildren);
-      };
-      collectChildren(id);
-
-      const pages = state.pages
-        .filter((p) => !idsToDelete.has(p.id))
-        .map((p) =>
-          p.id === page.parentId
-            ? { ...p, children: p.children.filter((c) => c !== id) }
-            : p
-        );
-
-      return {
-        pages,
-        activePageId: state.activePageId === id ? null : state.activePageId,
-      };
-    }),
-
-  setActivePage: (id) => set({ activePageId: id }),
-  getActivePage: () => {
-    const state = get();
-    return state.pages.find((p) => p.id === state.activePageId);
-  },
-
-  toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
-
-  toggleAIChat: () => set((state) => ({ aiChatOpen: !state.aiChatOpen })),
-  addChatMessage: (message) =>
-    set((state) => ({
-      chatMessages: [
-        ...state.chatMessages,
-        { ...message, id: uuidv4(), timestamp: new Date().toISOString() },
+export const useStore = create<AppState>()(
+  persist(
+    (set, get) => ({
+      pages: [
+        {
+          ...defaultPage(),
+          title: "Welcome to ForzaDocs",
+          content: `<h1>Welcome to ForzaDocs! 🚀</h1><p>Your AI-powered workspace for notes, files, tables, and more.</p><h2>Getting Started</h2><ul><li><strong>Create pages</strong> using the + button in the sidebar</li><li><strong>Rich text editing</strong> with headings, lists, code blocks, and more</li><li><strong>Type <code>/</code></strong> for the slash command menu to quickly insert blocks</li><li><strong>Embed content</strong> from YouTube and websites</li><li><strong>AI features</strong> to help you write, summarize, and organize</li></ul><h2>What's New</h2><ul><li>⭐ <strong>Favorites</strong> — Pin important pages to the top of your sidebar</li><li>🎨 <strong>Cover Images</strong> — Add beautiful gradient covers to your pages</li><li>🔗 <strong>Breadcrumbs</strong> — Navigate nested pages with ease</li><li>⌨️ <strong>Slash Commands</strong> — Type / to quickly insert any block type</li><li>💾 <strong>Auto-save</strong> — Your notes persist across sessions</li></ul><p>Click the ✨ AI button in the toolbar to get started!</p>`,
+          icon: "🚀",
+          isFavorite: true,
+        },
       ],
-    })),
-  clearChat: () => set({ chatMessages: [] }),
+      activePageId: null,
+      sidebarOpen: true,
+      aiChatOpen: false,
+      chatMessages: [],
+      searchQuery: "",
 
-  setSearchQuery: (query) => set({ searchQuery: query }),
-
-  addTag: (pageId, name, color) =>
-    set((state) => ({
-      pages: state.pages.map((p) =>
-        p.id === pageId
-          ? { ...p, tags: [...p.tags, { id: uuidv4(), name, color }] }
-          : p
-      ),
-    })),
-
-  removeTag: (pageId, tagId) =>
-    set((state) => ({
-      pages: state.pages.map((p) =>
-        p.id === pageId
-          ? { ...p, tags: p.tags.filter((t) => t.id !== tagId) }
-          : p
-      ),
-    })),
-
-  setPageTags: (pageId, tags) =>
-    set((state) => ({
-      pages: state.pages.map((p) => (p.id === pageId ? { ...p, tags } : p)),
-    })),
-
-  addFile: (pageId, file) =>
-    set((state) => ({
-      pages: state.pages.map((p) =>
-        p.id === pageId
-          ? {
-              ...p,
-              files: [
-                ...p.files,
-                { ...file, id: uuidv4(), uploadedAt: new Date().toISOString() },
-              ],
+      createPage: (parentId = null, type = "note") => {
+        const newPage: Page = {
+          ...defaultPage(),
+          parentId,
+          type,
+          tableData:
+            type === "table"
+              ? {
+                  columns: [
+                    { id: uuidv4(), name: "Name", type: "text" },
+                    {
+                      id: uuidv4(),
+                      name: "Status",
+                      type: "select",
+                      options: ["Todo", "In Progress", "Done"],
+                    },
+                    { id: uuidv4(), name: "Date", type: "date" },
+                  ],
+                  rows: [{ id: uuidv4(), cells: {} }],
+                }
+              : undefined,
+        };
+        set((state) => {
+          const pages = [...state.pages, newPage];
+          if (parentId) {
+            const parentIndex = pages.findIndex((p) => p.id === parentId);
+            if (parentIndex !== -1) {
+              pages[parentIndex] = {
+                ...pages[parentIndex],
+                children: [...pages[parentIndex].children, newPage.id],
+              };
             }
-          : p
-      ),
-    })),
+          }
+          return { pages, activePageId: newPage.id };
+        });
+        return newPage.id;
+      },
 
-  removeFile: (pageId, fileId) =>
-    set((state) => ({
-      pages: state.pages.map((p) =>
-        p.id === pageId
-          ? { ...p, files: p.files.filter((f) => f.id !== fileId) }
-          : p
-      ),
-    })),
+      updatePage: (id, updates) =>
+        set((state) => ({
+          pages: state.pages.map((p) =>
+            p.id === id
+              ? { ...p, ...updates, updatedAt: new Date().toISOString() }
+              : p
+          ),
+        })),
 
-  addEmbed: (pageId, embed) =>
-    set((state) => ({
-      pages: state.pages.map((p) =>
-        p.id === pageId
-          ? { ...p, embeds: [...p.embeds, { ...embed, id: uuidv4() }] }
-          : p
-      ),
-    })),
+      deletePage: (id) =>
+        set((state) => {
+          const page = state.pages.find((p) => p.id === id);
+          if (!page) return state;
 
-  removeEmbed: (pageId, embedId) =>
-    set((state) => ({
-      pages: state.pages.map((p) =>
-        p.id === pageId
-          ? { ...p, embeds: p.embeds.filter((e) => e.id !== embedId) }
-          : p
-      ),
-    })),
+          const idsToDelete = new Set<string>();
+          const collectChildren = (pageId: string) => {
+            idsToDelete.add(pageId);
+            const p = state.pages.find((pg) => pg.id === pageId);
+            p?.children.forEach(collectChildren);
+          };
+          collectChildren(id);
 
-  addTableColumn: (pageId, column) =>
-    set((state) => ({
-      pages: state.pages.map((p) =>
-        p.id === pageId && p.tableData
-          ? {
-              ...p,
-              tableData: {
-                ...p.tableData,
-                columns: [...p.tableData.columns, { ...column, id: uuidv4() }],
-              },
-            }
-          : p
-      ),
-    })),
+          const pages = state.pages
+            .filter((p) => !idsToDelete.has(p.id))
+            .map((p) =>
+              p.id === page.parentId
+                ? { ...p, children: p.children.filter((c) => c !== id) }
+                : p
+            );
 
-  removeTableColumn: (pageId, columnId) =>
-    set((state) => ({
-      pages: state.pages.map((p) =>
-        p.id === pageId && p.tableData
-          ? {
-              ...p,
-              tableData: {
-                ...p.tableData,
-                columns: p.tableData.columns.filter((c) => c.id !== columnId),
-              },
-            }
-          : p
-      ),
-    })),
+          return {
+            pages,
+            activePageId:
+              state.activePageId === id ? null : state.activePageId,
+          };
+        }),
 
-  addTableRow: (pageId) =>
-    set((state) => ({
-      pages: state.pages.map((p) =>
-        p.id === pageId && p.tableData
-          ? {
-              ...p,
-              tableData: {
-                ...p.tableData,
-                rows: [...p.tableData.rows, { id: uuidv4(), cells: {} }],
-              },
-            }
-          : p
-      ),
-    })),
+      setActivePage: (id) => set({ activePageId: id }),
+      getActivePage: () => {
+        const state = get();
+        return state.pages.find((p) => p.id === state.activePageId);
+      },
 
-  updateTableCell: (pageId, rowId, columnId, value) =>
-    set((state) => ({
-      pages: state.pages.map((p) =>
-        p.id === pageId && p.tableData
-          ? {
-              ...p,
-              tableData: {
-                ...p.tableData,
-                rows: p.tableData.rows.map((r) =>
-                  r.id === rowId
-                    ? { ...r, cells: { ...r.cells, [columnId]: value } }
-                    : r
-                ),
-              },
-            }
-          : p
-      ),
-    })),
+      toggleFavorite: (pageId) =>
+        set((state) => ({
+          pages: state.pages.map((p) =>
+            p.id === pageId ? { ...p, isFavorite: !p.isFavorite } : p
+          ),
+        })),
 
-  removeTableRow: (pageId, rowId) =>
-    set((state) => ({
-      pages: state.pages.map((p) =>
-        p.id === pageId && p.tableData
-          ? {
-              ...p,
-              tableData: {
-                ...p.tableData,
-                rows: p.tableData.rows.filter((r) => r.id !== rowId),
-              },
-            }
-          : p
-      ),
-    })),
-}));
+      toggleSidebar: () =>
+        set((state) => ({ sidebarOpen: !state.sidebarOpen })),
+
+      toggleAIChat: () => set((state) => ({ aiChatOpen: !state.aiChatOpen })),
+      addChatMessage: (message) =>
+        set((state) => ({
+          chatMessages: [
+            ...state.chatMessages,
+            {
+              ...message,
+              id: uuidv4(),
+              timestamp: new Date().toISOString(),
+            },
+          ],
+        })),
+      clearChat: () => set({ chatMessages: [] }),
+
+      setSearchQuery: (query) => set({ searchQuery: query }),
+
+      addTag: (pageId, name, color) =>
+        set((state) => ({
+          pages: state.pages.map((p) =>
+            p.id === pageId
+              ? { ...p, tags: [...p.tags, { id: uuidv4(), name, color }] }
+              : p
+          ),
+        })),
+
+      removeTag: (pageId, tagId) =>
+        set((state) => ({
+          pages: state.pages.map((p) =>
+            p.id === pageId
+              ? { ...p, tags: p.tags.filter((t) => t.id !== tagId) }
+              : p
+          ),
+        })),
+
+      setPageTags: (pageId, tags) =>
+        set((state) => ({
+          pages: state.pages.map((p) =>
+            p.id === pageId ? { ...p, tags } : p
+          ),
+        })),
+
+      addFile: (pageId, file) =>
+        set((state) => ({
+          pages: state.pages.map((p) =>
+            p.id === pageId
+              ? {
+                  ...p,
+                  files: [
+                    ...p.files,
+                    {
+                      ...file,
+                      id: uuidv4(),
+                      uploadedAt: new Date().toISOString(),
+                    },
+                  ],
+                }
+              : p
+          ),
+        })),
+
+      removeFile: (pageId, fileId) =>
+        set((state) => ({
+          pages: state.pages.map((p) =>
+            p.id === pageId
+              ? { ...p, files: p.files.filter((f) => f.id !== fileId) }
+              : p
+          ),
+        })),
+
+      addEmbed: (pageId, embed) =>
+        set((state) => ({
+          pages: state.pages.map((p) =>
+            p.id === pageId
+              ? { ...p, embeds: [...p.embeds, { ...embed, id: uuidv4() }] }
+              : p
+          ),
+        })),
+
+      removeEmbed: (pageId, embedId) =>
+        set((state) => ({
+          pages: state.pages.map((p) =>
+            p.id === pageId
+              ? { ...p, embeds: p.embeds.filter((e) => e.id !== embedId) }
+              : p
+          ),
+        })),
+
+      addTableColumn: (pageId, column) =>
+        set((state) => ({
+          pages: state.pages.map((p) =>
+            p.id === pageId && p.tableData
+              ? {
+                  ...p,
+                  tableData: {
+                    ...p.tableData,
+                    columns: [
+                      ...p.tableData.columns,
+                      { ...column, id: uuidv4() },
+                    ],
+                  },
+                }
+              : p
+          ),
+        })),
+
+      removeTableColumn: (pageId, columnId) =>
+        set((state) => ({
+          pages: state.pages.map((p) =>
+            p.id === pageId && p.tableData
+              ? {
+                  ...p,
+                  tableData: {
+                    ...p.tableData,
+                    columns: p.tableData.columns.filter(
+                      (c) => c.id !== columnId
+                    ),
+                  },
+                }
+              : p
+          ),
+        })),
+
+      addTableRow: (pageId) =>
+        set((state) => ({
+          pages: state.pages.map((p) =>
+            p.id === pageId && p.tableData
+              ? {
+                  ...p,
+                  tableData: {
+                    ...p.tableData,
+                    rows: [
+                      ...p.tableData.rows,
+                      { id: uuidv4(), cells: {} },
+                    ],
+                  },
+                }
+              : p
+          ),
+        })),
+
+      updateTableCell: (pageId, rowId, columnId, value) =>
+        set((state) => ({
+          pages: state.pages.map((p) =>
+            p.id === pageId && p.tableData
+              ? {
+                  ...p,
+                  tableData: {
+                    ...p.tableData,
+                    rows: p.tableData.rows.map((r) =>
+                      r.id === rowId
+                        ? { ...r, cells: { ...r.cells, [columnId]: value } }
+                        : r
+                    ),
+                  },
+                }
+              : p
+          ),
+        })),
+
+      removeTableRow: (pageId, rowId) =>
+        set((state) => ({
+          pages: state.pages.map((p) =>
+            p.id === pageId && p.tableData
+              ? {
+                  ...p,
+                  tableData: {
+                    ...p.tableData,
+                    rows: p.tableData.rows.filter((r) => r.id !== rowId),
+                  },
+                }
+              : p
+          ),
+        })),
+    }),
+    {
+      name: "forzadocs-storage",
+      partialize: (state) => ({
+        pages: state.pages,
+        activePageId: state.activePageId,
+        sidebarOpen: state.sidebarOpen,
+        aiChatOpen: state.aiChatOpen,
+      }),
+    }
+  )
+);

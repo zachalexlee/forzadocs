@@ -3,6 +3,8 @@ export interface Page {
   title: string;
   content: string;
   icon: string;
+  coverImage?: string;
+  isFavorite?: boolean;
   tags: Tag[];
   parentId: string | null;
   children: string[];
