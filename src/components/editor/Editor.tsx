@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useCallback, useState, useRef } from "react";
+import { useEffect, useCallback, useState, useRef, useMemo } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
+import { Extension } from "@tiptap/core";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import TaskList from "@tiptap/extension-task-list";
@@ -33,55 +35,78 @@ export default function Editor() {
   const { activePageId, pages, updatePage } = useStore();
   const activePage = pages.find((p) => p.id === activePageId);
   const [slashMenu, setSlashMenu] = useState<SlashMenuState | null>(null);
-  const slashMenuRef = useRef<SlashMenuState | null>(null);
   const activePageIdRef = useRef(activePageId);
 
-  // Keep refs in sync
   useEffect(() => {
     activePageIdRef.current = activePageId;
   }, [activePageId]);
-  useEffect(() => {
-    slashMenuRef.current = slashMenu;
-  }, [slashMenu]);
 
-  const doCheckSlash = useCallback(
-    (editorInstance: { state: { selection: { empty: boolean; $from: { parent: { textContent: string }; parentOffset: number; pos: number } } }; view: { coordsAtPos: (pos: number) => { bottom: number; left: number } }; isDestroyed: boolean }) => {
-      if (editorInstance.isDestroyed) return;
+  // Ref to communicate from ProseMirror plugin -> React
+  const slashCallbackRef = useRef<(s: SlashMenuState | null) => void>(() => {});
+  slashCallbackRef.current = setSlashMenu;
 
-      const { selection } = editorInstance.state;
-      if (!selection.empty) {
-        setSlashMenu(null);
-        return;
-      }
+  // Create TipTap extension with a ProseMirror plugin for slash detection.
+  // This is THE reliable way — ProseMirror guarantees plugin view.update() runs
+  // on every state change.
+  const slashExtension = useMemo(
+    () =>
+      Extension.create({
+        name: "slashCommands",
+        addProseMirrorPlugins() {
+          const callbackRef = slashCallbackRef;
+          return [
+            new Plugin({
+              key: new PluginKey("slashCommands"),
+              view() {
+                return {
+                  update(view) {
+                    const { state } = view;
+                    const { selection } = state;
 
-      const { $from } = selection;
-      const textContent = $from.parent.textContent;
-      const cursorPos = $from.parentOffset;
-      const textBefore = textContent.slice(0, cursorPos);
+                    if (!selection.empty) {
+                      callbackRef.current(null);
+                      return;
+                    }
 
-      // Match a slash at the start of the text node or after whitespace
-      const match = textBefore.match(/(?:^|\s)\/([\w]*)$/);
-      if (match) {
-        const query = match[1];
-        const slashFrom = $from.pos - query.length - 1;
-        const slashTo = $from.pos;
+                    const { $from } = selection;
+                    const textContent = $from.parent.textContent;
+                    const cursorPos = $from.parentOffset;
+                    const textBefore = textContent.slice(0, cursorPos);
 
-        try {
-          const coords = editorInstance.view.coordsAtPos(slashFrom);
-          setSlashMenu({
-            query,
-            from: slashFrom,
-            to: slashTo,
-            coords: { top: coords.bottom + 4, left: coords.left },
-          });
-        } catch {
-          setSlashMenu(null);
-        }
-      } else {
-        setSlashMenu(null);
-      }
-    },
-    []
+                    const match = textBefore.match(/(?:^|\s)\/([\w]*)$/);
+                    if (match) {
+                      const query = match[1];
+                      const from = $from.pos - query.length - 1;
+                      const to = $from.pos;
+
+                      try {
+                        const coords = view.coordsAtPos(from);
+                        callbackRef.current({
+                          query,
+                          from,
+                          to,
+                          coords: {
+                            top: coords.bottom + 4,
+                            left: coords.left,
+                          },
+                        });
+                      } catch {
+                        callbackRef.current(null);
+                      }
+                    } else {
+                      callbackRef.current(null);
+                    }
+                  },
+                  destroy() {
+                    callbackRef.current(null);
+                  },
+                };
+              },
+            }),
+          ];
+        },
+      }),
+    [] // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   const editor = useEditor({
@@ -103,6 +128,7 @@ export default function Editor() {
         openOnClick: true,
         HTMLAttributes: { target: "_blank", rel: "noopener noreferrer" },
       }),
+      slashExtension,
     ],
     content: activePage?.content || "",
     onUpdate: ({ editor: ed }) => {
@@ -119,34 +145,6 @@ export default function Editor() {
     immediatelyRender: false,
   });
 
-  // Detect slash commands using both TipTap events AND DOM events for reliability
-  useEffect(() => {
-    if (!editor) return;
-
-    // TipTap transaction event (fires on every state change)
-    const onTransaction = () => {
-      doCheckSlash(editor);
-    };
-    editor.on("transaction", onTransaction);
-
-    // DOM fallback: keyup on the editor element
-    const editorDom = editor.view.dom;
-    const onKeyUp = () => {
-      // Small delay to ensure TipTap has processed the input
-      requestAnimationFrame(() => {
-        if (!editor.isDestroyed) {
-          doCheckSlash(editor);
-        }
-      });
-    };
-    editorDom.addEventListener("keyup", onKeyUp);
-
-    return () => {
-      editor.off("transaction", onTransaction);
-      editorDom.removeEventListener("keyup", onKeyUp);
-    };
-  }, [editor, doCheckSlash]);
-
   useEffect(() => {
     if (editor && activePage) {
       const currentContent = editor.getHTML();
@@ -154,7 +152,6 @@ export default function Editor() {
         editor.commands.setContent(activePage.content || "");
       }
     }
-    // Close slash menu when switching pages
     setSlashMenu(null);
   }, [activePageId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -192,10 +189,18 @@ export default function Editor() {
             Select a page from the sidebar or create a new one to get started.
           </p>
           <div className="flex flex-col gap-2 text-left bg-surface rounded-xl p-5 border border-border">
-            <div className="text-xs uppercase tracking-wider text-text-muted font-medium mb-1">Quick tips</div>
+            <div className="text-xs uppercase tracking-wider text-text-muted font-medium mb-1">
+              Quick tips
+            </div>
             <div className="flex items-center gap-3 text-sm text-text-secondary">
               <span className="text-base">⌨️</span>
-              <span>Type <kbd className="px-1.5 py-0.5 rounded bg-background border border-border text-xs font-mono">/</kbd> for the slash command menu</span>
+              <span>
+                Type{" "}
+                <kbd className="px-1.5 py-0.5 rounded bg-background border border-border text-xs font-mono">
+                  /
+                </kbd>{" "}
+                for the slash command menu
+              </span>
             </div>
             <div className="flex items-center gap-3 text-sm text-text-secondary">
               <span className="text-base">⭐</span>
