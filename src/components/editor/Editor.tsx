@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useCallback, useState, useRef, useMemo } from "react";
+import { useEffect, useCallback, useState, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useEditor, EditorContent } from "@tiptap/react";
-import { Extension } from "@tiptap/core";
-import { Plugin, PluginKey } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import TaskList from "@tiptap/extension-task-list";
@@ -41,74 +40,6 @@ export default function Editor() {
     activePageIdRef.current = activePageId;
   }, [activePageId]);
 
-  // Ref to communicate from ProseMirror plugin -> React
-  const slashCallbackRef = useRef<(s: SlashMenuState | null) => void>(() => {});
-  slashCallbackRef.current = setSlashMenu;
-
-  // Create TipTap extension with a ProseMirror plugin for slash detection.
-  // This is THE reliable way — ProseMirror guarantees plugin view.update() runs
-  // on every state change.
-  const slashExtension = useMemo(
-    () =>
-      Extension.create({
-        name: "slashCommands",
-        addProseMirrorPlugins() {
-          const callbackRef = slashCallbackRef;
-          return [
-            new Plugin({
-              key: new PluginKey("slashCommands"),
-              view() {
-                return {
-                  update(view) {
-                    const { state } = view;
-                    const { selection } = state;
-
-                    if (!selection.empty) {
-                      callbackRef.current(null);
-                      return;
-                    }
-
-                    const { $from } = selection;
-                    const textContent = $from.parent.textContent;
-                    const cursorPos = $from.parentOffset;
-                    const textBefore = textContent.slice(0, cursorPos);
-
-                    const match = textBefore.match(/(?:^|\s)\/([\w]*)$/);
-                    if (match) {
-                      const query = match[1];
-                      const from = $from.pos - query.length - 1;
-                      const to = $from.pos;
-
-                      try {
-                        const coords = view.coordsAtPos(from);
-                        callbackRef.current({
-                          query,
-                          from,
-                          to,
-                          coords: {
-                            top: coords.bottom + 4,
-                            left: coords.left,
-                          },
-                        });
-                      } catch {
-                        callbackRef.current(null);
-                      }
-                    } else {
-                      callbackRef.current(null);
-                    }
-                  },
-                  destroy() {
-                    callbackRef.current(null);
-                  },
-                };
-              },
-            }),
-          ];
-        },
-      }),
-    [] // eslint-disable-line react-hooks/exhaustive-deps
-  );
-
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -128,7 +59,6 @@ export default function Editor() {
         openOnClick: true,
         HTMLAttributes: { target: "_blank", rel: "noopener noreferrer" },
       }),
-      slashExtension,
     ],
     content: activePage?.content || "",
     onUpdate: ({ editor: ed }) => {
@@ -144,6 +74,43 @@ export default function Editor() {
     },
     immediatelyRender: false,
   });
+
+  // Slash command detection — runs on every keystroke via React event handler.
+  // This is the most reliable approach: React synthetic events always fire.
+  const detectSlashCommand = useCallback(() => {
+    if (!editor || editor.isDestroyed) return;
+
+    const { state } = editor;
+    const { selection } = state;
+
+    if (!selection.empty) {
+      setSlashMenu(null);
+      return;
+    }
+
+    const { $from } = selection;
+    const textContent = $from.parent.textContent;
+    const cursorPos = $from.parentOffset;
+    const textBefore = textContent.slice(0, cursorPos);
+
+    // Match "/" at start of node text or after whitespace
+    const match = textBefore.match(/(?:^|\s)\/([\w]*)$/);
+
+    if (match) {
+      const query = match[1];
+      const from = $from.pos - query.length - 1;
+      const to = $from.pos;
+      const coords = editor.view.coordsAtPos(from);
+      setSlashMenu({
+        query,
+        from,
+        to,
+        coords: { top: coords.bottom + 4, left: coords.left },
+      });
+    } else {
+      setSlashMenu(null);
+    }
+  }, [editor]);
 
   useEffect(() => {
     if (editor && activePage) {
@@ -260,27 +227,20 @@ export default function Editor() {
           </div>
 
           {/* Editor or Table View */}
-          <div className="mt-2 relative">
+          <div className="mt-2">
             {activePage.type === "table" ? (
               <TableView />
             ) : (
-              <>
+              <div
+                onKeyUp={detectSlashCommand}
+                onInput={detectSlashCommand}
+                onMouseUp={detectSlashCommand}
+              >
                 <EditorContent
                   editor={editor}
                   className="min-h-[400px]"
                 />
-                {slashMenu && editor && (
-                  <SlashCommandMenu
-                    editor={editor}
-                    query={slashMenu.query}
-                    from={slashMenu.from}
-                    to={slashMenu.to}
-                    coords={slashMenu.coords}
-                    onClose={() => setSlashMenu(null)}
-                    onSelect={() => setSlashMenu(null)}
-                  />
-                )}
-              </>
+              </div>
             )}
           </div>
 
@@ -291,6 +251,22 @@ export default function Editor() {
           {activePage.files.length > 0 && <FileSection />}
         </div>
       </div>
+
+      {/* Slash command menu — rendered via portal to document.body
+          so it's never clipped by overflow or z-index stacking contexts */}
+      {slashMenu && editor && typeof document !== "undefined" &&
+        createPortal(
+          <SlashCommandMenu
+            editor={editor}
+            query={slashMenu.query}
+            from={slashMenu.from}
+            to={slashMenu.to}
+            coords={slashMenu.coords}
+            onClose={() => setSlashMenu(null)}
+            onSelect={() => setSlashMenu(null)}
+          />,
+          document.body
+        )}
     </div>
   );
 }
